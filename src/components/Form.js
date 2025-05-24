@@ -7,6 +7,7 @@ export default function Form() {
     const [lastname, setLastname] = useState("");
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
+    const [role, setRole] = useState("");
     const navigate = useNavigate();
 
     const collectData = async (e) => {
@@ -14,11 +15,12 @@ export default function Form() {
 
         try {
             // Axios POST request to backend
-            const response = await axios.post('http://localhost:4000/register', {
+            const response = await axios.post('http://localhost:4000/api/auth/register', {
                 firstname,
                 lastname,
                 email,
                 password,
+                role,
             });
 
             // Save the returned user data in localStorage

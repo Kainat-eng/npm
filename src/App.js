@@ -8,6 +8,7 @@ import Settings from './Settings';
 import Alerts from './Alerts';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Form from './components/Form';
+import ProtectedRoute from './components/ProtectedRoute';
 
 function App() {
   return (
@@ -22,7 +23,18 @@ function App() {
         {/* Route for the dashboard with Sidebar */}
         <Route path="/dashboard" element={<><Sidebar /><Dashboard /></>} />
 
-        <Route path="/server" element={<><Sidebar /><Server /></>} />
+        {/* <Route path="/server" element={<><Sidebar /><Server /></>} /> */}
+        <Route
+          path="/server"
+          element={
+            <ProtectedRoute allowedRoles={['ServerAdmin']}>
+              <>
+                <Sidebar />
+                <Server />
+              </>
+            </ProtectedRoute>
+          }
+        />
 
         {/* Route for the alerts page with Sidebar */}
         <Route path="/alerts" element={<><Sidebar /><Alerts /></>} />
@@ -31,7 +43,18 @@ function App() {
         <Route path="/settings" element={<><Sidebar /><Settings /></>} />
 
         {/* Route for the users page with Sidebar */}
-        <Route path="/users" element={<><Sidebar /><Users /></>} />
+        {/* <Route path="/users" element={<><Sidebar /><Users /></>} /> */}
+        <Route
+          path="/Users"
+          element={
+            <ProtectedRoute allowedRoles={['Admin']}>
+              <>
+                <Sidebar />
+                <Users />
+              </>
+            </ProtectedRoute>
+          }
+        />
 
         {/* Redirect unknown routes to the login page */}
         <Route path="*" element={<Navigate to="/login" replace />} />
