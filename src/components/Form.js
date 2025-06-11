@@ -1,116 +1,129 @@
 import React, { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import axios from "axios";
+import { createUserWithEmailAndPassword } from "firebase/auth";
+import { auth } from "../firebase";
 
 export default function Form() {
-    const [firstname, setFirstname] = useState("");
-    const [lastname, setLastname] = useState("");
-    const [email, setEmail] = useState("");
-    const [password, setPassword] = useState("");
-    const [role, setRole] = useState("");
-    const navigate = useNavigate();
+  const [firstname, setFirstname] = useState("");
+  const [lastname, setLastname] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const navigate = useNavigate();
 
-    const collectData = async (e) => {
-        e.preventDefault();
+  const collectData = async (e) => {
+    e.preventDefault();
+    setError("");
 
-        try {
-            // Axios POST request to backend
-            const response = await axios.post('http://localhost:4000/api/auth/register', {
-                firstname,
-                lastname,
-                email,
-                password,
-                role,
-            });
+    try {
+      // 1. Create Firebase user (email + password)
+      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+      const idToken = await userCredential.user.getIdToken();
 
-            // Save the returned user data in localStorage
-            if (response.data) {
-                localStorage.setItem("user", JSON.stringify(response.data));
-                alert("Registration successful!");
-                navigate('/login'); // Redirect to login page
-            }
-        } catch (error) {
-            console.error("Error during signup:", error.response?.data || error.message);
-            alert(error.response?.data || "Something went wrong!");
+      // 2. Send user info + token to backend (no password here!)
+      const response = await axios.post(
+        "http://localhost:4000/api/auth/register",
+        {
+          firstname,
+          lastname,
+          email,
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${idToken}`,
+          },
+          withCredentials: true,
         }
-    };
+      );
 
-    return (
-        <div id="signup-screen" role="form">
-            <div className="signup-container">
-                <form onSubmit={collectData}>
-                    <h1>Sign Up</h1>
+      // 3. Handle backend response
+      if (response.data.success) {
+        alert("Registration successful!");
+        navigate("/login");
+      } else {
+        setError("Registration failed: Backend error.");
+      }
+    } catch (err) {
+      console.error("Signup error:", err);
+      if (err.code?.includes("auth/")) {
+        setError("Firebase error: " + err.message);
+      } else {
+        setError(err.response?.data?.message || "Something went wrong!");
+      }
+    }
+  };
 
-                    {/* First Name Field */}
-                    <div className="form-group">
-                        <label htmlFor="first-name">First Name</label>
-                        <input
-                            type="text"
-                            id="first-name"
-                            placeholder="First Name"
-                            aria-label="First Name"
-                            value={firstname}
-                            onChange={(e) => setFirstname(e.target.value)}
-                            required
-                        />
-                    </div>
+  return (
+    <div id="signup-screen" role="form">
+      <div className="signup-container">
+        <form onSubmit={collectData}>
+          <h1>Sign Up</h1>
 
-                    {/* Last Name Field */}
-                    <div className="form-group">
-                        <label htmlFor="last-name">Last Name</label>
-                        <input
-                            type="text"
-                            id="last-name"
-                            placeholder="Last Name"
-                            aria-label="Last Name"
-                            value={lastname}
-                            onChange={(e) => setLastname(e.target.value)}
-                            required
-                        />
-                    </div>
+          <div className="form-group">
+            <label htmlFor="first-name">First Name</label>
+            <input
+              type="text"
+              id="first-name"
+              placeholder="First Name"
+              aria-label="First Name"
+              value={firstname}
+              onChange={(e) => setFirstname(e.target.value)}
+              required
+            />
+          </div>
 
-                    {/* Email Field */}
-                    <div className="form-group">
-                        <label htmlFor="email">Email</label>
-                        <input
-                            type="email"
-                            id="email"
-                            placeholder="Email"
-                            aria-label="Email"
-                            value={email}
-                            onChange={(e) => setEmail(e.target.value)}
-                            required
-                        />
-                    </div>
+          <div className="form-group">
+            <label htmlFor="last-name">Last Name</label>
+            <input
+              type="text"
+              id="last-name"
+              placeholder="Last Name"
+              aria-label="Last Name"
+              value={lastname}
+              onChange={(e) => setLastname(e.target.value)}
+              required
+            />
+          </div>
 
-                    {/* Password Field */}
-                    <div className="form-group">
-                        <label htmlFor="password">Password</label>
-                        <input
-                            type="password"
-                            id="password"
-                            placeholder="Password"
-                            aria-label="Password"
-                            value={password}
-                            onChange={(e) => setPassword(e.target.value)}
-                            required
-                        />
-                    </div>
+          <div className="form-group">
+            <label htmlFor="email">Email</label>
+            <input
+              type="email"
+              id="email"
+              placeholder="Email"
+              aria-label="Email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+            />
+          </div>
 
-                    {/* Submit Button */}
-                    <button type="submit" id="register-button">
-                        Sign Up
-                    </button>
-                </form>
-            </div>
+          <div className="form-group">
+            <label htmlFor="password">Password</label>
+            <input
+              type="password"
+              id="password"
+              placeholder="Password"
+              aria-label="Password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+            />
+          </div>
 
-            {/* Already a Member Link */}
-            <div className="already-member">
-                <span>Already a member? </span>
-                <Link to="/login" id="login-link" aria-label="Log In">
-                    Log In
-                </Link>
-            </div>
-        </div>
-    );
+          <button type="submit" id="register-button">Sign Up</button>
+
+          {error && <div className="error-message">{error}</div>}
+        </form>
+      </div>
+
+      <div className="already-member">
+        <span>Already a member? </span>
+        <Link to="/login" id="login-link" aria-label="Log In">
+          Log In
+        </Link>
+      </div>
+    </div>
+  );
 }

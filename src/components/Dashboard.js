@@ -365,6 +365,8 @@
 
 import React, { useEffect, useState, useRef } from 'react';
 import { Chart } from 'chart.js/auto';
+import { getAuth, onAuthStateChanged } from 'firebase/auth';
+import { app } from '../firebase';
 
 const Dashboard = () => {
   // Chart refs
@@ -374,110 +376,147 @@ const Dashboard = () => {
   const memoryUsageChartRef = useRef(null);
 
   // State for API data
-  const [systemMetrics, setSystemMetrics] = useState({
-    metrics: [],
-    uptime: 0,
-    downtime: 0,
-    location: null
+  const [serverMetrics, setServerMetrics] = useState({
+    'Server-01': { metrics: [], uptime: 0, downtime: 0, location: null },
+    'Server-02': { metrics: [], uptime: 0, downtime: 0, location: null }
   });
-
-  const [uptimeData, setUptimeData] = useState(null);
-  const [monthlyMetrics, setMonthlyMetrics] = useState(null);
+  const [uptimeData, setUptimeData] = useState({
+    'Server-01': null,
+    'Server-02': null
+  });
+  const [monthlyMetrics, setMonthlyMetrics] = useState({
+    'Server-01': null,
+    'Server-02': null
+  });
   const [loading, setLoading] = useState(true);
   const [apiErrors, setApiErrors] = useState({});
+  const [activeServer, setActiveServer] = useState('Server-01');
 
-  // Dummy data for fallback
-  const dummyMetrics = {
-    metrics: [{
-      cpu: { brand: 'Intel Xeon', manufacturer: 'Intel' },
-      currentLoad: { currentLoad: 35.2 },
-      mem: { used: 8589934592, total: 17179869184 }, // 8GB used of 16GB
-      disk: [{ use: 65.3 }]
-    }],
-    uptime: 86400 * 7, // 7 days
-    downtime: 3600, // 1 hour
-    location: { city: 'New York', country: 'USA' }
-  };
+  // Initialize auth state listener
+  useEffect(() => {
+    const auth = getAuth(app);
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        fetchAllData();
+        // Set up interval for auto-refresh every minute
+        const intervalId = setInterval(fetchAllData, 60000);
+        return () => clearInterval(intervalId);
+      } else {
+        console.log('User not authenticated');
+        setLoading(false);
+      }
+    });
+    return unsubscribe;
+  }, []);
 
-  const dummyUptimeData = {
-    dailyUptime: Array(7).fill(0).map((_, i) => ({
-      date: new Date(Date.now() - (6 - i) * 86400000).toLocaleDateString(),
-      uptime: 90 + Math.random() * 10
-    })),
-    uptimePercentage: 98.7
-  };
+  // Fetch with error handling
+const fetchWithErrorHandling = async (url, endpointName, serverId) => {
+  try {
+    const auth = getAuth(app);
+    const user = auth.currentUser;
+    if (!user) throw new Error('User not authenticated');
 
-  const dummyMonthlyMetrics = Array(12).fill(0).map((_, i) => ({
-    month: i,
-    cpuUsage: 30 + Math.random() * 40,
-    memoryUsage: 40 + Math.random() * 30
-  }));
+    const token = await user.getIdToken();
+    const headers = {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    };
 
-  // Helper function to fetch with error handling
-  const fetchWithErrorHandling = async (url, endpointName) => {
-    try {
-      const response = await fetch(url);
-      if (!response.ok) throw new Error(`${endpointName} failed with status ${response.status}`);
-      return await response.json();
-    } catch (error) {
-      console.error(`Error fetching ${endpointName}:`, error);
-      setApiErrors(prev => ({ ...prev, [endpointName]: error.message }));
-      return null;
+    // Add server ID header if provided
+    if (serverId) {
+      headers['X-Server-ID'] = serverId;
     }
-  };
 
-  // Fetch all data
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: headers,
+      credentials: 'include'
+    });
+
+    if (response.status === 401) {
+      await user.getIdToken(true);
+      return fetchWithErrorHandling(url, endpointName, serverId);
+    }
+
+    if (!response.ok) {
+      throw new Error(`${endpointName} failed with status ${response.status}`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error(`Error fetching ${endpointName} for ${serverId}:`, error);
+    setApiErrors(prev => ({ 
+      ...prev, 
+      [`${serverId}-${endpointName}`]: error.message 
+    }));
+    return null;
+  }
+};
+
+  // Fetch all data for both servers
   const fetchAllData = async () => {
+    const auth = getAuth(app);
+    if (!auth.currentUser) {
+      console.log('Not authenticated - skipping data fetch');
+      setLoading(false);
+      return;
+    }
+
     try {
       setLoading(true);
       const apiUrl = process.env.REACT_APP_API_URL || 'http://localhost:4000';
       
-      const metricsData = await fetchWithErrorHandling(
-        `${apiUrl}/api/system-metrics`,
-        'system-metrics'
-      );
-      
-      const uptimeData = await fetchWithErrorHandling(
-        `${apiUrl}/api/uptime/monthly`,
-        'uptime-monthly'
-      );
-      
-      const monthlyData = await fetchWithErrorHandling(
-        `${apiUrl}/api/system-metrics/monthly`,
-        'system-metrics-monthly'
-      );
-      
-      const locationData = await fetchWithErrorHandling(
-        `${apiUrl}/api/system-location`,
-        'system-location'
-      );
+      // Fetch data for both servers in parallel
+      const serverIds = ['Server-01', 'Server-02'];
+      const allData = await Promise.all(serverIds.map(async (serverId) => {
+        const [metricsData, uptimeData] = await Promise.all([
+          fetchWithErrorHandling(`${apiUrl}/api/system-metrics`, 'system-metrics', serverId),
+          fetchWithErrorHandling(`${apiUrl}/api/system-metrics/monthly`, 'system-metrics-monthly', serverId)
+        ]);
 
-      if (metricsData) {
-        setSystemMetrics(prev => ({
-          ...prev,
-          metrics: metricsData.metrics || [],
-          uptime: metricsData.uptime || 0,
-          downtime: metricsData.downtime || 0
-        }));
-      }
+        return {
+          serverId,
+          metricsData,
+          uptimeData
+        };
+      }));
 
-      if (uptimeData) setUptimeData(uptimeData);
-      if (monthlyData) setMonthlyMetrics(Array.isArray(monthlyData) ? monthlyData : []);
-      if (locationData) setSystemMetrics(prev => ({ ...prev, location: locationData }));
-      
+      // Update state for each server
+      allData.forEach(({ serverId, metricsData, uptimeData }) => {
+        if (metricsData) {
+          setServerMetrics(prev => ({
+            ...prev,
+            [serverId]: {
+              ...prev[serverId],
+              metrics: metricsData.metrics || [],
+              uptime: metricsData.uptime || 0,
+              downtime: metricsData.downtime || 0
+            }
+          }));
+        }
+
+        if (uptimeData) {
+          setUptimeData(prev => ({
+            ...prev,
+            [serverId]: {
+              dailyUptime: uptimeData.map(item => ({
+                date: item.date,
+                uptime: item.uptime
+              })),
+              uptimePercentage: uptimeData.reduce((sum, item) => sum + item.uptime, 0) / uptimeData.length
+            }
+          }));
+        }
+      });
+
     } catch (error) {
-      console.error('Error in fetchAllData:', error);
+      console.error('Error fetching data:', error);
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => {
-    fetchAllData();
-    const interval = setInterval(fetchAllData, 60000);
-    return () => clearInterval(interval);
-  }, []);
-
+  // Initialize charts for active server
   useEffect(() => {
     if (loading) return;
 
@@ -492,122 +531,134 @@ const Dashboard = () => {
 
     destroyCharts();
 
-    try {
-      // Use real data if available, otherwise use dummy data
-      const useUptimeData = uptimeData || dummyUptimeData;
-      const useMonthlyMetrics = monthlyMetrics || dummyMonthlyMetrics;
-      const useCurrentMetrics = systemMetrics.metrics.length > 0 ? systemMetrics : dummyMetrics;
-      const useDiskData = useCurrentMetrics.metrics[0]?.disk || dummyMetrics.metrics[0].disk;
+    const currentServerData = serverMetrics[activeServer];
+    const currentUptimeData = uptimeData[activeServer];
+    
+    if (!currentServerData || !currentServerData.metrics.length) return;
 
-      // System Load Chart (Uptime)
-      if (systemLoadChartRef.current) {
-        new Chart(systemLoadChartRef.current, {
-          type: 'line',
-          data: {
-            labels: useUptimeData.dailyUptime.map(item => item.date),
-            datasets: [{
-              label: 'Daily Uptime (%)',
-              data: useUptimeData.dailyUptime.map(item => parseFloat(item.uptime)),
-              borderColor: '#4bc0c0',
-              backgroundColor: 'rgba(75, 192, 192, 0.2)',
-              tension: 0.3,
-              fill: true
-            }]
-          },
-          options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-              title: { display: true, text: 'System Uptime (%)' },
-              tooltip: { callbacks: { label: (tooltipItem) => `${tooltipItem.raw}%` } }
-            }
-          }
-        });
-      }
+    const currentMetric = currentServerData.metrics[0];
+    const diskData = currentMetric.disk || [{ use: 0 }];
 
-      // CPU Usage Chart
-      if (cpuUsageChartRef.current) {
-        new Chart(cpuUsageChartRef.current, {
-          type: 'bar',
-          data: {
-            labels: useMonthlyMetrics.map(item => `Month ${parseInt(item.month) + 1}`),
-            datasets: [{
-              label: 'CPU Usage (%)',
-              data: useMonthlyMetrics.map(item => item.cpuUsage),
-              backgroundColor: 'rgba(255, 99, 132, 0.6)',
-              borderColor: 'rgb(255, 99, 132)',
-              borderWidth: 1
-            }]
-          },
-          options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            scales: { y: { beginAtZero: true, max: 100 } },
-            plugins: {
-              title: { display: true, text: 'CPU Usage (%)' },
-              tooltip: { callbacks: { label: (tooltipItem) => `${tooltipItem.raw.toFixed(1)}%` } }
-            }
+    // System Load Chart
+    if (systemLoadChartRef.current && currentUptimeData) {
+      new Chart(systemLoadChartRef.current, {
+        type: 'line',
+        data: {
+          labels: currentUptimeData.dailyUptime.map(item => item.date),
+          datasets: [{
+            label: 'Daily Uptime (%)',
+            data: currentUptimeData.dailyUptime.map(item => item.uptime),
+            borderColor: '#4bc0c0',
+            backgroundColor: 'rgba(75, 192, 192, 0.2)',
+            tension: 0.3,
+            fill: true
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            title: { display: true, text: 'System Uptime (%)' },
+            tooltip: { callbacks: { label: (tooltipItem) => `${tooltipItem.raw}%` } }
           }
-        });
-      }
+        }
+      });
+    }
 
-      // Disk Usage Chart
-      if (diskUsageChartRef.current) {
-        const disk = useDiskData[0];
-        new Chart(diskUsageChartRef.current, {
-          type: 'doughnut',
-          data: {
-            labels: ['Used', 'Free'],
-            datasets: [{
-              data: [disk.use, 100 - disk.use],
-              backgroundColor: ['#36a2eb', '#ffcd56'],
-              borderColor: '#fff',
-              borderWidth: 2
-            }]
-          },
-          options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-              title: { display: true, text: 'Disk Usage (%)' },
-              tooltip: { callbacks: { label: (tooltipItem) => `${tooltipItem.raw.toFixed(1)}%` } }
-            }
-          }
-        });
-      }
+    // CPU Usage Chart
+    if (cpuUsageChartRef.current && currentServerData.metrics.length > 0) {
+      const cpuData = currentServerData.metrics.slice(0, 10).reverse().map((metric, index) => ({
+        time: index,
+        load: metric.currentLoad?.currentLoad || 0
+      }));
 
-      // Memory Usage Chart
-      if (memoryUsageChartRef.current) {
-        new Chart(memoryUsageChartRef.current, {
-          type: 'bar',
-          data: {
-            labels: useMonthlyMetrics.map(item => `Month ${parseInt(item.month) + 1}`),
-            datasets: [{
-              label: 'Memory Usage (%)',
-              data: useMonthlyMetrics.map(item => item.memoryUsage),
-              backgroundColor: 'rgba(75, 192, 192, 0.6)',
-              borderColor: 'rgb(75, 192, 192)',
-              borderWidth: 1
-            }]
-          },
-          options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            scales: { y: { beginAtZero: true, max: 100 } },
-            plugins: {
-              title: { display: true, text: 'Memory Usage (%)' },
-              tooltip: { callbacks: { label: (tooltipItem) => `${tooltipItem.raw.toFixed(1)}%` } }
-            }
+      new Chart(cpuUsageChartRef.current, {
+        type: 'line',
+        data: {
+          labels: cpuData.map(item => `Time ${item.time}`),
+          datasets: [{
+            label: 'CPU Usage (%)',
+            data: cpuData.map(item => item.load),
+            backgroundColor: 'rgba(255, 99, 132, 0.6)',
+            borderColor: 'rgb(255, 99, 132)',
+            borderWidth: 1,
+            tension: 0.1,
+            fill: true
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: { y: { beginAtZero: true, max: 100 } },
+          plugins: {
+            title: { display: true, text: 'Recent CPU Usage (%)' },
+            tooltip: { callbacks: { label: (tooltipItem) => `${tooltipItem.raw.toFixed(1)}%` } }
           }
-        });
-      }
-    } catch (chartError) {
-      console.error('Error initializing charts:', chartError);
+        }
+      });
+    }
+
+    // Disk Usage Chart
+    if (diskUsageChartRef.current) {
+      new Chart(diskUsageChartRef.current, {
+        type: 'doughnut',
+        data: {
+          labels: ['Used', 'Free'],
+          datasets: [{
+            data: [diskData[0].use, 100 - diskData[0].use],
+            backgroundColor: ['#36a2eb', '#ffcd56'],
+            borderColor: '#fff',
+            borderWidth: 2
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            title: { display: true, text: 'Disk Usage (%)' },
+            tooltip: { callbacks: { label: (tooltipItem) => `${tooltipItem.raw.toFixed(1)}%` } }
+          }
+        }
+      });
+    }
+
+    // Memory Usage Chart
+    if (memoryUsageChartRef.current && currentServerData.metrics.length > 0) {
+      const memData = currentServerData.metrics.slice(0, 10).reverse().map((metric, index) => ({
+        time: index,
+        usage: metric.mem ? (metric.mem.used / metric.mem.total) * 100 : 0
+      }));
+
+      new Chart(memoryUsageChartRef.current, {
+        type: 'line',
+        data: {
+          labels: memData.map(item => `Time ${item.time}`),
+          datasets: [{
+            label: 'Memory Usage (%)',
+            data: memData.map(item => item.usage),
+            backgroundColor: 'rgba(75, 192, 192, 0.6)',
+            borderColor: 'rgb(75, 192, 192)',
+            borderWidth: 1,
+            tension: 0.1,
+            fill: true
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: { y: { beginAtZero: true, max: 100 } },
+          plugins: {
+            title: { display: true, text: 'Recent Memory Usage (%)' },
+            tooltip: { callbacks: { label: (tooltipItem) => `${tooltipItem.raw.toFixed(1)}%` } }
+          }
+        }
+      });
     }
 
     return destroyCharts;
-  }, [loading, systemMetrics, uptimeData, monthlyMetrics]);
+  }, [loading, serverMetrics, uptimeData, activeServer]);
 
+  // Helper functions
   const formatUptime = (seconds) => {
     if (typeof seconds !== 'number') return 'N/A';
     const hours = Math.floor(seconds / 3600);
@@ -617,18 +668,44 @@ const Dashboard = () => {
   };
 
   const getCurrentMetric = () => {
-    return systemMetrics.metrics.length > 0 ? systemMetrics.metrics[0] : dummyMetrics.metrics[0];
+    return serverMetrics[activeServer]?.metrics?.[0] || {};
   };
 
   const getUptimePercentage = () => {
-    return uptimeData ? uptimeData.uptimePercentage : dummyUptimeData.uptimePercentage;
+    return uptimeData[activeServer]?.uptimePercentage || 0;
   };
+
+  const handleServerToggle = (serverId) => {
+    setActiveServer(serverId);
+  };
+
+  const currentMetric = getCurrentMetric();
+  const memoryUsage = currentMetric.mem ? 
+    ((currentMetric.mem.used / currentMetric.mem.total) * 100).toFixed(1) : 
+    'N/A';
+  const diskUsage = currentMetric.disk?.[0]?.use?.toFixed(1) || 'N/A';
+  const cpuUsage = currentMetric.currentLoad?.currentLoad?.toFixed(1) || 'N/A';
 
   return (
     <div className="zimbra-dashboard">
       <div className="dashboard-header">
-        <h1>System Dashboard</h1>
-        <div className="time-period">1.4 week</div>
+        <h1>System Dashboard - {activeServer}</h1>
+        <div className="time-period">Last Updated: {new Date().toLocaleTimeString()}</div>
+      </div>
+
+      <div className="server-toggle">
+        <button 
+          className={`server-btn ${activeServer === 'Server-01' ? 'active' : ''}`}
+          onClick={() => handleServerToggle('Server-01')}
+        >
+          Server 01
+        </button>
+        <button 
+          className={`server-btn ${activeServer === 'Server-02' ? 'active' : ''}`}
+          onClick={() => handleServerToggle('Server-02')}
+        >
+          Server 02
+        </button>
       </div>
 
       <div className="metrics-table">
@@ -636,10 +713,9 @@ const Dashboard = () => {
           <thead>
             <tr>
               <th>Metric</th>
-              <th>Recorded Megabytes</th>
-              <th>Delivered Megabytes</th>
-              <th>Total Alerts</th>
-              <th>Resolved Alerts</th>
+              <th>Uptime</th>
+              <th>Downtime</th>
+              <th>Uptime %</th>
               <th>CPU Usage</th>
               <th>Memory Usage</th>
               <th>Disk Usage</th>
@@ -648,40 +724,35 @@ const Dashboard = () => {
           <tbody>
             <tr>
               <td>Current</td>
-              <td>1.32 MB</td>
-              <td>2.57 MB</td>
-              <td>8</td>
-              <td>5</td>
-              <td>{getCurrentMetric().currentLoad ? `${getCurrentMetric().currentLoad.currentLoad?.toFixed(1)}%` : 'N/A'}</td>
-              <td>{getCurrentMetric().mem ? 
-                 `${((getCurrentMetric().mem.used / getCurrentMetric().mem.total) * 100).toFixed(1)}%` : 
-                 'N/A'}</td>
-              <td>{getCurrentMetric().disk?.length > 0 ? 
-                 `${getCurrentMetric().disk[0].use.toFixed(1)}%` : 
-                 'N/A'}</td>
+              <td>{formatUptime(serverMetrics[activeServer]?.uptime)}</td>
+              <td>{formatUptime(serverMetrics[activeServer]?.downtime)}</td>
+              <td>{getUptimePercentage().toFixed(2)}%</td>
+              <td>{cpuUsage}%</td>
+              <td>{memoryUsage}%</td>
+              <td>{diskUsage}%</td>
             </tr>
           </tbody>
         </table>
       </div>
 
       <div className="cpu-usage-section">
-        <h2>CPU Usage</h2>
+        <h2>System Overview</h2>
         <div className="cpu-usage-grid">
           <div className="cpu-usage-card">
-            <h3>CPU 0</h3>
-            <p>{getCurrentMetric().currentLoad ? `${getCurrentMetric().currentLoad.currentLoad?.toFixed(1)}%` : 'N/A'}</p>
+            <h3>CPU Brand</h3>
+            <p>{currentMetric.cpu?.brand || 'N/A'}</p>
           </div>
           <div className="cpu-usage-card">
-            <h3>CPU 25</h3>
-            <p>25%</p>
+            <h3>CPU Usage</h3>
+            <p>{cpuUsage}%</p>
           </div>
           <div className="cpu-usage-card">
-            <h3>CPU 30</h3>
-            <p>30%</p>
+            <h3>Memory Usage</h3>
+            <p>{memoryUsage}%</p>
           </div>
           <div className="cpu-usage-card">
-            <h3>CPU 40</h3>
-            <p>40%</p>
+            <h3>Disk Usage</h3>
+            <p>{diskUsage}%</p>
           </div>
         </div>
       </div>
@@ -715,8 +786,6 @@ const Dashboard = () => {
           </div>
         </div>
       </div>
-
-      
     </div>
   );
 };
